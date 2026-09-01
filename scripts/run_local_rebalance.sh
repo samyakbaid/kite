@@ -39,11 +39,17 @@ if [[ "${ALLOW_PROXY_UNIVERSE:-NO}" == "YES_I_ACCEPT_PROXY_RISK" ]]; then
 fi
 
 mkdir -p .trading_state receipts
-exec 9>".trading_state/${STRATEGY_MODEL}.lock"
-if ! flock -n 9; then
-  echo "Another rebalance is already running for ${STRATEGY_MODEL}" >&2
+LOCK_DIR=".trading_state/${STRATEGY_MODEL}.lockdir"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "Another rebalance may be running for ${STRATEGY_MODEL}." >&2
+  echo "If no process is running, remove it with: rmdir '$LOCK_DIR'" >&2
   exit 3
 fi
+
+cleanup_lock() {
+  rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+trap cleanup_lock EXIT INT TERM HUP
 
 .venv/bin/trading-rebalance \
   --signals "$SIGNAL_FILE" \
