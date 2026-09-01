@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-09-01T15:17:49.127403+00:00",
+  "signal_date": "2026-08-31",
+  "last_price_date": "2026-09-01",
+  "partial_last_month_dropped": true,
+  "membership_kind": "proxy",
+  "universe_source": "LIQUIDITY-PROXY MEMBERSHIP FILE",
+  "n_hold": 30,
+  "eligible_names": {
+    "momentum": 496,
+    "ridge": 496
+  },
+  "files": {
+    "signals_momentum.csv": "98cdb59291df13a4dc3a53b18942eea1806cd636b811b31a69fdab53089e5690",
+    "signals_ridge.csv": "766b2e87612afef6c23da5749b00f0934bcfd05fb2c1780a8f92787aff8886c2",
+    "ridge_model.json": "894eaccb5d8e73f146db17c2936ff039b23a6963b62a128a626f34aa84c634dd"
+  },
+  "warning": "Research-only liquidity-proxy universe; replace with official historical membership before relying on the strategy."
+}
