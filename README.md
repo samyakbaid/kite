@@ -23,6 +23,38 @@ unless you explicitly override the block. The correct next data step is replacin
 membership file with official point-in-time snapshots and re-exporting with
 `--membership-kind official`.
 
+## Mathematics & Strategy Methodology
+
+The rebalancer uses an **Equal-Weight Momentum Strategy** combined with **Ridge Regression** signals.
+
+### 1. Position Sizing (Equal-Weighting)
+
+The target for each selected asset is to be equally weighted based on the total strategy capital.
+For a given strategy capital ($C$) and number of target holdings ($N$):
+
+- **Target Capital per Stock** = $C \div N$
+
+For our defaults (Capital = ₹1,00,000, $N$ = 30):
+Target Capital = $100,000 \div 30 \approx 3,333$ INR
+
+The actual quantity to buy is always rounded down to the nearest whole share (floor function) to ensure we don't exceed the allocated capital per asset:
+- **Quantity to Buy** = $\lfloor \text{Target Capital} \div \text{Last Traded Price (LTP)} \rfloor$
+
+If you already hold shares of a target asset, the quantity to buy is adjusted:
+- **Quantity to Buy** = $\lfloor \text{Target Capital} \div \text{LTP} \rfloor - \text{Current Holding Quantity}$
+
+### 2. Monthly Turnover Cap
+
+To minimize slippage and trading costs, the backtest and live execution enforce a **20% one-way monthly turnover cap**.
+- **Max Allowed Trading Value** = $C \times 0.20$
+
+This means a new portfolio scales into its target positions over roughly 5 months (20% per month) rather than executing 100% turnover immediately. Sells are executed first, and the proceeds are re-allocated to buys.
+
+### 3. Bootstrap Mode (Initial Deployment)
+
+For the very first deployment, `BOOTSTRAP` mode can be enabled. This temporarily bypasses the 20% turnover cap and sets it to 100%, allowing the portfolio to be fully invested in a single run.
+After the initial buys, a **Residual Top-up Pass** deploys leftover cash (from the integer share rounding) into the highest-ranked names, one additional share at a time, until the maximum per-asset weight (default 10%) or total capital is reached.
+
 ## Local setup
 
 ```bash
@@ -80,6 +112,30 @@ cleanest setup.
 
 The 20% turnover cap also means a new portfolio ramps toward its target over several
 monthly runs. This matches the backtest rather than investing 100% immediately.
+
+## First deployment (bootstrap)
+
+To get fully invested in one run instead of ramping in over five months, use bootstrap
+mode. It lifts the turnover cap to 100% for that single run; every later run reverts to
+the standard `--max-turnover` cap.
+
+- The rebalancer **auto-enables** bootstrap when the model has no recorded submissions
+  and no managed holdings. Pass `--no-bootstrap` (or `BOOTSTRAP=NO`) to opt out.
+- To force it on a model that already has a submission (e.g. reconciling a partial
+  fill), run `BOOTSTRAP=YES FORCE=YES ./scripts/run_local_rebalance.sh` after checking
+  the saved receipt and the Kite order book. `--force` re-submits every planned order,
+  so only use it once you know what is already filled.
+
+A residual top-up pass then spends left-over cash (integer-share rounding, and names
+priced above the equal-weight budget of `capital / n_hold`) on extra whole shares of the
+highest-ranked names, one at a time, until the turnover budget, the per-order value cap,
+available cash, or the `--max-weight` per-name ceiling (default 10%) is reached. Disable
+it with `--no-top-up`. The top-up always stays inside `--max-turnover`, so on normal
+monthly runs it only mops up rounding crumbs; on a bootstrap run it fills the book.
+
+Names priced above `--max-weight * capital` are still skipped rather than held at an
+outsized weight. With `STRATEGY_CAPITAL=100000` and 30 holdings the equal-weight budget
+is only about ₹3,333 per name, so raising capital is the real fix for broad coverage.
 
 ## Enabling live mode
 

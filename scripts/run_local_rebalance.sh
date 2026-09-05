@@ -26,16 +26,25 @@ esac
 # Pull only code/artifacts. Local credentials, receipts, and state are ignored by Git.
 git pull --ff-only
 
-LIVE_ARGS=()
-PROXY_ARGS=()
+set --
+
 if [[ "$EXECUTION_MODE" == "live" ]]; then
-  LIVE_ARGS=(--live --confirm-live PLACE_ORDERS)
+  set -- "$@" --live --confirm-live PLACE_ORDERS
 elif [[ "$EXECUTION_MODE" != "dry_run" ]]; then
   echo "EXECUTION_MODE must be dry_run or live" >&2
   exit 2
 fi
 if [[ "${ALLOW_PROXY_UNIVERSE:-NO}" == "YES_I_ACCEPT_PROXY_RISK" ]]; then
-  PROXY_ARGS=(--allow-proxy-universe)
+set -- "$@" --allow-proxy-universe
+fi
+if [[ "${BOOTSTRAP:-NO}" == "YES" ]]; then
+  set -- "$@" --bootstrap
+fi
+if [[ -n "${MAX_WEIGHT:-}" ]]; then
+  set -- "$@" --max-weight "$MAX_WEIGHT"
+fi
+if [[ "${FORCE:-NO}" == "YES" ]]; then
+  set -- "$@" --force
 fi
 
 mkdir -p .trading_state receipts
@@ -56,5 +65,4 @@ trap cleanup_lock EXIT INT TERM HUP
   --capital "$STRATEGY_CAPITAL" \
   --state-file ".trading_state/${STRATEGY_MODEL}.json" \
   --receipt-dir receipts \
-  "${PROXY_ARGS[@]}" \
-  "${LIVE_ARGS[@]}"
+  "$@"

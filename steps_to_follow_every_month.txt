@@ -1,0 +1,150 @@
+
+All code is in place and tested. Here is the complete picture.
+
+PART 1 — Placing the orders by hand this week
+The goal
+
+Equal-weight the 30 momentum names with your ₹1,00,000. That's ₹3,333 per name. You already hold 1 share each of TDPOWERSYS and GVPIL, so those two need a bit less.
+
+Formula for every name:
+
+quantity to buy = floor( 3333 / current price )
+
+(for TDPOWERSYS and GVPIL, subtract the 1 share you already own)
+
+The 30 names, in priority order
+
+Buy from the top down. If you run out of cash, the ones at the bottom are the ones to skip.
+
+#	Symbol	Qty to buy = floor(3333 ÷ LTP)
+1	SAKAR	
+2	GRWRHITECH	
+3	SANSERA	
+4	DEEDEV	⚠️ see note below
+5	KIRLOSENG	
+6	THANGAMAYL	
+7	NGLFINE	
+8	TDPOWERSYS	floor(3333÷LTP) minus 1 (≈ ₹744 → buy 3)
+9	RRKABEL	
+10	KERNEX	
+11	ACUTAAS	
+12	AVALON	
+13	ADANIENSOL	
+14	GVPIL	floor(3333÷LTP) minus 1 (≈ ₹629 → buy 4)
+15	RPEL	
+16	YASHO	
+17	LAURUSLABS	
+18	AETHER	
+19	NETWEB	
+20	TMB	
+21	STYLAMIND	
+22	BHARATFORG	
+23	INDOTECH	
+24	CHENNPETRO	
+25	WELCORP	
+26	WHEELS	
+27	PARAS	
+28	CEMPRO	
+29	DREDGECORP	
+30	UNIVCABLES	
+
+Read the LTP (last traded price) for each from the Kite app, divide 3,333 by it, round down.
+
+If a name's price is above ₹3,333 → floor gives 0. Buy 1 share if it's under ~₹8,000; otherwise skip it.
+Keep a ₹2,000–3,000 cash buffer — don't spend the last rupee, prices move while you're placing.
+Exactly what to select in the Kite order window
+
+For each name: search the symbol → tap it → tap BUY. Then in the order ticket:
+
+Field	What to select	Why
+Exchange	NSE	The strategy is NSE-only
+Product	Longterm / CNC (NOT Intraday / MIS)	CNC = delivery; shares go to your demat and stay
+Quantity	floor(3333 ÷ LTP)	Equal weight
+Order type	MARKET for liquid names — instant fill. LIMIT for small/volatile names — set price ~0.5% above LTP	Limit protects you from a bad fill on thin stocks
+Validity	Day	
+Trigger price / Disclosed qty / Stoploss	leave blank / default	Not used
+
+Then submit (swipe or click BUY). Go to the Orders tab and confirm it shows COMPLETE. If a LIMIT order stays OPEN, either wait, modify the price up a little, or cancel and redo as MARKET.
+
+The DEEDEV special case
+
+Last time DEEDEV was rejected: "order price higher than the upper circuit limit." The stock was at its daily up-limit.
+
+In the order ticket, Kite shows the price band (e.g. "Circuit: 585.00 – 650.75").
+Place a LIMIT order with price = the upper circuit number or ₹1 below it.
+If the stock is frozen at upper circuit, you likely won't get filled today — try tomorrow, or just skip it. It's ₹650 out of ₹1,00,000. Missing one name of 30 is immaterial.
+After you finish buying — one required command
+
+This is the important part. The bot keeps a file, .trading_state/momentum.json, listing which stocks it "owns." Right now that file only knows about GVPIL and TDPOWERSYS (from the Sep 2 partial run). If you buy the other 28 by hand, the file won't know — and next month the bot would try to buy them all over again, because it thinks you hold 0.
+
+I added a small script to fix that. Run it once, after you're done placing orders:
+
+cd /Users/samyak/Documents/kite/Trading_strategy
+.venv/bin/python scripts/mark_managed.py --model momentum --from-signals
+
+That marks all 30 names as bot-owned. (It doesn't record share counts — the bot reads those live from Kite next run. It just says "these names are mine, not personal holdings.") It's safe even for names you skipped: the bot checks your real holdings and ignores names you don't actually hold.
+
+PART 2 — How the automatic rebalance works from next month
+What the script actually does
+
+./scripts/run_local_rebalance.sh (with EXECUTION_MODE=live in .env) runs this sequence:
+
+git pull — fetches any new signal files committed from your research machine.
+Reads from Kite: your current holdings, live prices, available cash.
+Computes the difference between what you hold and the new target list:
+names that dropped out of the top ~45 → SELL
+names that entered the top 30 → BUY
+existing names that drifted → resize
+Caps the trading at 20% of capital per month (the turnover cap — deliberate, matches the backtest). So it does not churn the whole portfolio each month.
+Places orders: all sells first, then buys. If any sell errors, it skips all buys that run (safety).
+Writes a receipt to receipts/ and updates .trading_state/momentum.json.
+
+It will not bootstrap again — that only happens on a truly fresh account. From now on it's the gentle 20%/month rebalance.
+
+"Will it automatically rebalance for me?" — Yes, but only if 4 things are true
+#	Requirement	What happens if it's missing	How you satisfy it
+1	A new signal file with a new date (e.g. 2026-09-30) is committed	Script sees the old Aug-31 file → refuses ("already submitted" / "stale"). Nothing trades.	Someone runs scripts/export_from_research.py on the research machine each month and git pushes the 4 artifact files. The script's git pull then picks them up.
+2	Fresh Kite access token	Every API call fails. Nothing trades.	Run .venv/bin/python scripts/auth_kite.py and log in via browser the morning of the run. Tokens die every day around 7:30 AM IST.
+3	Your machine's public IP is whitelisted in the Kite developer console	The "No IPs configured" error you're hitting now. Nothing trades.	Fix it when your lockout ends. Note: home internet IPs change periodically, so this can break again — a cloud VM with a fixed IP is the durable fix.
+4	State file reconciled (mark_managed.py after any manual trading)	Bot re-buys names you already hold, or won't sell names it should.	The command in Part 1.
+
+If all 4 hold, then one command does the whole rebalance. You still must then open the receipt and the Kite order book to confirm what actually filled (see Part 3).
+
+What "automatic" does NOT mean
+It does not refresh your token — you do that.
+It does not generate new signals — the research export does.
+It does not handle rejected orders — it logs them and moves on.
+A cron job can run the command on a schedule, but it can't do the three things above. Realistically this is a monthly 10-minute manual routine, not a fire-and-forget robot.
+Your monthly routine (once everything is fixed)
+
+Early in the month, a weekday morning:
+
+cd /Users/samyak/Documents/kite/Trading_strategy
+.venv/bin/python scripts/auth_kite.py          # log in via browser
+EXECUTION_MODE=dry_run ./scripts/run_local_rebalance.sh   # preview — writes a dry-run receipt, places nothing
+
+Read the dry-run receipt in receipts/. If the planned orders look sane:
+
+EXECUTION_MODE=live ./scripts/run_local_rebalance.sh
+
+Then check receipts/…_live.json and the Kite order book for fills.
+
+PART 3 — When an order is rejected next time
+
+Same behaviour as I described earlier:
+
+"Submitted" ≠ "filled." The receipt only means Kite accepted the request. Always check the order book for the actual fill price and quantity.
+A rejected BUY (circuit limit, price band, etc.) → the script logs it in the receipt and moves to the next order. That name is simply not bought this cycle. It's re-attempted next month automatically. No action needed unless you want to place it by hand.
+A rejected SELL → the script skips every buy for the rest of that run (it won't spend cash it failed to raise). You'd re-run after fixing the cause.
+Insufficient cash → caught before any order is placed; the whole run aborts with a clear message.
+The script never retries or re-prices automatically.
+Summary of what I changed in the code
+File	Change
+src/trading_strategy/planner.py	Bootstrap turnover + residual top-up pass so a first run deploys ~100% of capital instead of ~20%
+src/trading_strategy/cli.py	--bootstrap / auto-detect first deployment, --max-weight, --no-top-up flags; records bootstrap info in the receipt
+scripts/run_local_rebalance.sh	BOOTSTRAP=YES, FORCE=YES, MAX_WEIGHT= env vars
+scripts/mark_managed.py	New — reconciles the state file after you trade by hand (no API needed)
+tests/test_planner.py	4 new tests, all 13 pass
+README.md, .env.example	Documented bootstrap + top-up + manual reconciliation
+
+Nothing is committed — review and commit when you're ready. Note that scripts/mark_managed.py will only help next month; this week is 100% manual in the Kite app since the API is down for you.

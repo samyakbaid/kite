@@ -26,6 +26,33 @@ def parse_args(argv=None):
     parser.add_argument("--n-hold", type=int, default=30)
     parser.add_argument("--buffer", type=float, default=0.5)
     parser.add_argument("--max-turnover", type=float, default=0.20)
+    parser.add_argument(
+        "--bootstrap",
+        action="store_true",
+        help="First-deployment mode: lift the turnover cap so ~all capital is deployed this run",
+    )
+    parser.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Disable the automatic first-deployment turnover lift",
+    )
+    parser.add_argument(
+        "--bootstrap-turnover",
+        type=float,
+        default=1.0,
+        help="Turnover cap used while bootstrap mode is active",
+    )
+    parser.add_argument(
+        "--max-weight",
+        type=float,
+        default=0.10,
+        help="Per-name portfolio weight ceiling for the residual cash top-up",
+    )
+    parser.add_argument(
+        "--no-top-up",
+        action="store_true",
+        help="Disable the residual cash top-up pass (leaves rounding cash idle)",
+    )
     parser.add_argument("--min-trade-value", type=float, default=500.0)
     parser.add_argument("--max-order-value", type=float, default=100_000.0)
     parser.add_argument("--max-orders", type=int, default=60)
@@ -123,6 +150,20 @@ def main(argv=None, broker_factory=KiteBroker):
         symbol: broker_holdings[symbol] for symbol in managed_symbols
     }
 
+    first_deployment = not state["submissions"] and not current_quantities
+    use_bootstrap = (args.bootstrap or first_deployment) and not args.no_bootstrap
+    effective_turnover = (
+        max(args.max_turnover, args.bootstrap_turnover)
+        if use_bootstrap
+        else args.max_turnover
+    )
+    if use_bootstrap:
+        trigger = "requested" if args.bootstrap else "auto: no prior submissions or managed holdings"
+        print(
+            f"BOOTSTRAP ({trigger}): deploying up to {effective_turnover:.0%} "
+            "one-way turnover this run instead of the standard cap."
+        )
+
     # Fetch only the top buffer zone and existing managed names, not the whole file.
     candidates = choose_holdings(
         signals,
@@ -140,10 +181,12 @@ def main(argv=None, broker_factory=KiteBroker):
         managed_symbols=managed_symbols,
         n_hold=args.n_hold,
         buffer=args.buffer,
-        max_turnover=args.max_turnover,
+        max_turnover=effective_turnover,
         min_trade_value=args.min_trade_value,
         max_order_value=args.max_order_value,
         max_orders=args.max_orders,
+        max_weight=args.max_weight,
+        top_up=not args.no_top_up,
     )
     if args.phase == "sells":
         intents = [intent for intent in intents if intent.side == "SELL"]
@@ -159,6 +202,8 @@ def main(argv=None, broker_factory=KiteBroker):
         "signal_file": str(signal_path),
         "manifest_file": str(manifest_path) if manifest_path.exists() else None,
         "capital": args.capital,
+        "bootstrap": use_bootstrap,
+        "effective_max_turnover": effective_turnover,
         "state_file": str(state_path),
         "selected_symbols": selected,
         "orders": [intent.to_dict() for intent in intents],

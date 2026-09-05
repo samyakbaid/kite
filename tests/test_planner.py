@@ -65,6 +65,73 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(sells, {"S060"})
         self.assertNotIn("PERSONAL", {intent.symbol for intent in intents})
 
+    def test_bootstrap_turnover_deploys_almost_all_capital(self):
+        signals = make_signals()
+        prices = {signal.symbol: 100.0 + signal.rank for signal in signals[:30]}
+        _, intents = plan_rebalance(
+            signals,
+            current_quantities={},
+            managed_symbols=set(),
+            prices=prices,
+            capital=100_000,
+            n_hold=30,
+            max_turnover=1.0,
+            min_trade_value=0,
+        )
+        spent = sum(intent.estimated_value for intent in intents)
+        self.assertTrue(all(intent.side == "BUY" for intent in intents))
+        self.assertLessEqual(spent, 100_000 + 1e-6)
+        self.assertGreater(spent, 0.97 * 100_000)
+
+    def test_top_up_still_respects_monthly_turnover_cap(self):
+        signals = make_signals()
+        prices = {signal.symbol: 100.0 + signal.rank for signal in signals[:30]}
+        _, intents = plan_rebalance(
+            signals,
+            current_quantities={},
+            managed_symbols=set(),
+            prices=prices,
+            capital=100_000,
+            n_hold=30,
+            max_turnover=0.20,
+            min_trade_value=0,
+        )
+        spent = sum(intent.estimated_value for intent in intents)
+        self.assertLessEqual(spent / 100_000, 0.20 + 1e-9)
+
+    def test_top_up_respects_per_name_weight_ceiling(self):
+        signals = make_signals()
+        prices = {signal.symbol: 100.0 for signal in signals[:30]}
+        _, intents = plan_rebalance(
+            signals,
+            current_quantities={},
+            managed_symbols=set(),
+            prices=prices,
+            capital=100_000,
+            n_hold=30,
+            max_turnover=1.0,
+            min_trade_value=0,
+            max_weight=0.05,
+        )
+        by_symbol = {intent.symbol: intent.estimated_value for intent in intents}
+        self.assertTrue(all(value <= 0.05 * 100_000 + 1e-9 for value in by_symbol.values()))
+
+    def test_bootstrap_buys_names_priced_above_equal_weight_budget(self):
+        signals = make_signals()
+        prices = {signal.symbol: 100.0 for signal in signals[:30]}
+        prices["S001"] = 4_000.0  # above capital / n_hold = 3333, but under the 10% ceiling
+        _, intents = plan_rebalance(
+            signals,
+            current_quantities={},
+            managed_symbols=set(),
+            prices=prices,
+            capital=100_000,
+            n_hold=30,
+            max_turnover=1.0,
+            min_trade_value=0,
+        )
+        self.assertIn("S001", {intent.symbol for intent in intents})
+
     def test_order_value_limit_fails_closed(self):
         signals = make_signals()
         prices = {signal.symbol: 100.0 for signal in signals[:30]}
