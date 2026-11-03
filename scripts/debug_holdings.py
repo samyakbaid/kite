@@ -33,8 +33,22 @@ def main():
             t_bot += (q + t1) * price
         print(f"{h['tradingsymbol']:14}{h.get('exchange', '?'):5}{q:5d}{t1:4d}{coll:5d}{num(h.get('used_quantity')):5d}"
               f"{price:10.2f}{value:12.2f}  {h.get('product', '')}")
-    print(f"\nTotal value counting quantity+t1+collateral: {t_all:,.2f}")
-    print(f"What the bot counts (NSE, quantity+t1):       {t_bot:,.2f}")
+    # The number the bot uses: merged NSE+BSE, plus today's CNC buys, minus excluded ETFs.
+    import os
+
+    excluded = {x.strip().upper() for x in os.environ.get("UNMANAGED_SYMBOLS", "").split(",") if x.strip()}
+    broker = KiteBroker()
+    broker.client = client
+    owned = {s: q for s, q in broker.holdings().items() if s not in excluded}
+    prices = broker.last_prices(set(owned)) if owned else {}
+    bot_total = sum(q * prices[s] for s, q in owned.items())
+    ex_total = sum(num(h.get("quantity")) * float(h.get("last_price") or 0)
+                   for h in rows if h["tradingsymbol"].upper() in excluded)
+    today_total = bot_total + ex_total - t_all
+    print(f"\nKite holdings page, all exchanges (settled):      {t_all:>12,.2f}")
+    print(f"+ bought today (shown under positions):           {today_total:>12,.2f}")
+    print(f"- personal holdings the bot ignores ({', '.join(sorted(excluded)) or 'none'}): {-ex_total:>12,.2f}")
+    print(f"= value the bot manages (matches the run table):  {bot_total:>12,.2f}")
     print("\nPOSITIONS (net, non-zero)")
     for p in client.positions().get("net", []):
         if num(p.get("quantity")) or num(p.get("buy_quantity")):
