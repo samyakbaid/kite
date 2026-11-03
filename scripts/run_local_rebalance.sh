@@ -8,6 +8,9 @@ if [[ ! -d .venv ]]; then
   echo "Missing .venv. Run: python3 -m venv .venv && .venv/bin/pip install -e ." >&2
   exit 2
 fi
+# Remember what the caller typed so .env cannot silently override it.
+CALLER_MODE="${EXECUTION_MODE-}"
+CALLER_ARGS=("$@")
 if [[ -f .env ]]; then
   set -a
   source .env
@@ -16,7 +19,7 @@ fi
 : "${STRATEGY_CAPITAL:?Set STRATEGY_CAPITAL in .env or the environment}"
 
 STRATEGY_MODEL=${STRATEGY_MODEL:-momentum}
-EXECUTION_MODE=${EXECUTION_MODE:-dry_run}
+EXECUTION_MODE=${CALLER_MODE:-${EXECUTION_MODE:-dry_run}}
 case "$STRATEGY_MODEL" in
   momentum) SIGNAL_FILE="artifacts/signals_momentum.csv" ;;
   ridge) SIGNAL_FILE="artifacts/signals_ridge.csv" ;;
@@ -43,6 +46,9 @@ fi
 if [[ -n "${MAX_WEIGHT:-}" ]]; then
   set -- "$@" --max-weight "$MAX_WEIGHT"
 fi
+if [[ -n "${MAX_TURNOVER:-}" ]]; then
+  set -- "$@" --max-turnover "$MAX_TURNOVER"
+fi
 if [[ "${FORCE:-NO}" == "YES" ]]; then
   set -- "$@" --force
 fi
@@ -65,4 +71,5 @@ trap cleanup_lock EXIT INT TERM HUP
   --capital "$STRATEGY_CAPITAL" \
   --state-file ".trading_state/${STRATEGY_MODEL}.json" \
   --receipt-dir receipts \
-  "$@"
+  "$@" \
+  ${CALLER_ARGS[@]+"${CALLER_ARGS[@]}"}

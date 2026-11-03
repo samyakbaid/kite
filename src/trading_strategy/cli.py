@@ -2,7 +2,8 @@ import argparse
 import json
 import os
 import re
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .kite_broker import KiteBroker
@@ -70,6 +71,23 @@ def parse_args(argv=None):
     parser.add_argument("--live", action="store_true", help="Actually submit orders")
     parser.add_argument("--confirm-live", help="Must equal PLACE_ORDERS in live mode")
     parser.add_argument("--force", action="store_true", help="Allow a repeated signal date")
+    parser.add_argument(
+        "--order-delay",
+        type=float,
+        default=0.5,
+        help="Seconds to wait between order submissions (Kite rate limit)",
+    )
+    parser.add_argument(
+        "--max-consecutive-errors",
+        type=int,
+        default=3,
+        help="Stop submitting after this many failed orders in a row (e.g. IP not whitelisted)",
+    )
+    parser.add_argument(
+        "--ignore-market-hours",
+        action="store_true",
+        help="Skip the NSE market-hours check for live regular-variety orders",
+    )
     return parser.parse_args(argv)
 
 
@@ -107,6 +125,22 @@ def live_gate(args):
         raise RuntimeError("live mode requires KITE_LIVE_TRADING=ENABLED")
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def check_market_open(args, now=None):
+    """Block live regular-variety orders outside NSE hours (Mon-Fri 09:15-15:30 IST)."""
+    if not args.live or args.variety != "regular" or args.ignore_market_hours:
+        return
+    now = (now or datetime.now(IST)).astimezone(IST)
+    minutes = now.hour * 60 + now.minute
+    if now.weekday() >= 5 or not (9 * 60 + 15 <= minutes < 15 * 60 + 30):
+        raise RuntimeError(
+            f"NSE looks closed ({now:%a %H:%M} IST); regular orders would be rejected. "
+            "Run during 09:15-15:30 IST on a trading day, or pass --ignore-market-hours."
+        )
+
+
 def main(argv=None, broker_factory=KiteBroker):
     args = parse_args(argv)
     max_age = None if args.allow_stale else args.max_signal_age_days
@@ -141,6 +175,7 @@ def main(argv=None, broker_factory=KiteBroker):
         )
 
     live_gate(args)
+    check_market_open(args)
     broker = broker_factory()
     broker_holdings = broker.holdings()
     managed_symbols = set(state["managed_symbols"]).intersection(broker_holdings)
@@ -229,12 +264,28 @@ def main(argv=None, broker_factory=KiteBroker):
 
     tag = f"wf_{slugify(model)[:8]}_{signal_date:%y%m}"
     sell_failed = False
-    for intent in intents:
+    consecutive_errors = 0
+    aborted = False
+    print("\nSubmitting orders...")
+    for index, intent in enumerate(intents):
+        if aborted:
+            payload["results"].append(
+                {
+                    **intent.to_dict(),
+                    "status": "skipped",
+                    "error": f"{args.max_consecutive_errors} consecutive order errors",
+                }
+            )
+            print(f"  SKIP  {intent.side:4} {intent.symbol:14} (aborted after repeated errors)")
+            continue
         if intent.side == "BUY" and sell_failed:
             payload["results"].append(
                 {**intent.to_dict(), "status": "skipped", "error": "a sell order failed"}
             )
+            print(f"  SKIP  {intent.side:4} {intent.symbol:14} (a sell order failed)")
             continue
+        if index > 0 and args.order_delay > 0:
+            time.sleep(args.order_delay)
         try:
             order_id = broker.place(
                 intent,
@@ -246,12 +297,26 @@ def main(argv=None, broker_factory=KiteBroker):
             payload["results"].append(
                 {**intent.to_dict(), "status": "submitted", "order_id": str(order_id)}
             )
+            consecutive_errors = 0
+            print(
+                f"  OK    {intent.side:4} {intent.symbol:14} qty {intent.quantity:5d} "
+                f"order_id {order_id}"
+            )
         except Exception as exc:  # broker errors must be captured in the receipt
             payload["results"].append(
                 {**intent.to_dict(), "status": "error", "error": str(exc)}
             )
+            print(f"  FAIL  {intent.side:4} {intent.symbol:14} qty {intent.quantity:5d} -> {exc}")
             if intent.side == "SELL":
                 sell_failed = True
+            consecutive_errors += 1
+            if consecutive_errors >= args.max_consecutive_errors:
+                aborted = True
+                print(
+                    f"\nSTOPPING: {consecutive_errors} orders failed in a row. "
+                    "If the error mentions an IP, whitelist this machine's IP in the Kite "
+                    "developer console."
+                )
 
     if not intents or any(
         result["status"] == "submitted" for result in payload["results"]
@@ -259,10 +324,14 @@ def main(argv=None, broker_factory=KiteBroker):
         record_submission(state, model, signal_date, payload["results"])
         save_state(state_path, state)
     receipt = write_receipt(args.receipt_dir, model, signal_date, "live", payload)
+    submitted = sum(r["status"] == "submitted" for r in payload["results"])
+    failed = sum(r["status"] == "error" for r in payload["results"])
+    skipped = sum(r["status"] == "skipped" for r in payload["results"])
+    print(f"\nSummary: {submitted} submitted, {failed} failed, {skipped} skipped.")
     print(
-        f"\nSubmitted orders are not guaranteed fills. Check Kite order status. Receipt: {receipt}"
+        f"Submitted orders are not guaranteed fills. Check Kite order status. Receipt: {receipt}"
     )
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

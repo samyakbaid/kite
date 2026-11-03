@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-09-01T15:17:49.127403+00:00",
-  "signal_date": "2026-08-31",
-  "last_price_date": "2026-09-01",
-  "partial_last_month_dropped": true,
-  "membership_kind": "proxy",
-  "universe_source": "LIQUIDITY-PROXY MEMBERSHIP FILE",
+  "generated_at_utc": "2026-11-02T06:56:20.750275+00:00",
+  "signal_date": "2026-10-31",
+  "last_price_date": "2026-10-30",
+  "partial_last_month_dropped": false,
+  "membership_kind": "official",
+  "universe_source": "OFFICIAL POINT-IN-TIME MEMBERSHIP FILE",
   "n_hold": 30,
   "eligible_names": {
     "momentum": 496,
     "ridge": 496
   },
   "files": {
-    "signals_momentum.csv": "98cdb59291df13a4dc3a53b18942eea1806cd636b811b31a69fdab53089e5690",
-    "signals_ridge.csv": "766b2e87612afef6c23da5749b00f0934bcfd05fb2c1780a8f92787aff8886c2",
-    "ridge_model.json": "894eaccb5d8e73f146db17c2936ff039b23a6963b62a128a626f34aa84c634dd"
+    "signals_momentum.csv": "b46a5f6e1c04c62eb162bfdd2a599bf1d4103dea0ca36ce3e41f9752a03a31b3",
+    "signals_ridge.csv": "57286868f5e41567df5faae15aa2e60f396c88ce5cd9701554ee6e76f30cdbfe",
+    "ridge_model.json": "d08d42b33973cffd2ee30afda7536e5b36abb1a556e7a5d75f15f8f662c627d5"
   },
-  "warning": "Research-only liquidity-proxy universe; replace with official historical membership before relying on the strategy."
+  "warning": null
 }
