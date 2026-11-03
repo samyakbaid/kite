@@ -28,11 +28,63 @@ class KiteBroker:
         self._tick_sizes = None
 
     def holdings(self):
-        return {
-            item["tradingsymbol"].upper(): max(0, int(item.get("quantity", 0)))
-            for item in self.client.holdings()
-            if item.get("exchange") == "NSE" and int(item.get("quantity", 0)) > 0
+        """Shares owned per symbol, merged across NSE and BSE rows.
+
+        Includes unsettled (T+1) shares and today's CNC buys. Kite's holdings call omits
+        shares bought today, which instead appear as positive CNC net positions. Today's
+        sells are already deducted from holdings, so negative positions are ignored.
+        """
+        settled = {}
+        t1 = {}
+        for item in self.client.holdings():
+            if item.get("exchange") not in ("NSE", "BSE"):
+                continue
+            symbol = item["tradingsymbol"].upper()
+            settled[symbol] = settled.get(symbol, 0) + max(
+                0, int(item.get("quantity", 0) or 0)
+            ) + max(0, int(item.get("collateral_quantity", 0) or 0))
+            t1[symbol] = t1.get(symbol, 0) + max(0, int(item.get("t1_quantity", 0) or 0))
+        bought_today = {}
+        for position in self.client.positions().get("net", []):
+            if position.get("product") != "CNC" or position.get("exchange") not in ("NSE", "BSE"):
+                continue
+            symbol = position["tradingsymbol"].upper()
+            bought_today[symbol] = bought_today.get(symbol, 0) + max(
+                0, int(position.get("quantity", 0) or 0)
+            )
+        result = {}
+        for symbol in set(settled) | set(t1) | set(bought_today):
+            # t1 and positions can describe the same shares; never add both.
+            quantity = settled.get(symbol, 0) + max(t1.get(symbol, 0), bought_today.get(symbol, 0))
+            if quantity > 0:
+                result[symbol] = quantity
+        return result
+
+    ACTIVE_ORDER_STATUSES = frozenset(
+        {
+            "COMPLETE",
+            "OPEN",
+            "TRIGGER PENDING",
+            "PUT ORDER REQ RECEIVED",
+            "VALIDATION PENDING",
+            "OPEN PENDING",
+            "MODIFY VALIDATION PENDING",
+            "MODIFY PENDING",
+            "AMO REQ RECEIVED",
         }
+    )
+
+    def todays_orders(self):
+        """(side, symbol) pairs already ordered today and not rejected/cancelled."""
+        pairs = set()
+        for order in self.client.orders():
+            if (
+                order.get("exchange") == "NSE"
+                and order.get("product") == "CNC"
+                and order.get("status") in self.ACTIVE_ORDER_STATUSES
+            ):
+                pairs.add((order["transaction_type"], order["tradingsymbol"].upper()))
+        return pairs
 
     def last_prices(self, symbols):
         symbols = sorted(set(symbols))

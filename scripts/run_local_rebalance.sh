@@ -58,6 +58,9 @@ fi
 if [[ -n "${PHASE:-}" ]]; then
   set -- "$@" --phase "$PHASE"
 fi
+if [[ -n "${UNMANAGED_SYMBOLS:-}" ]]; then
+  set -- "$@" --exclude "$UNMANAGED_SYMBOLS"
+fi
 if [[ -n "${MAX_TURNOVER:-}" ]]; then
   set -- "$@" --max-turnover "$MAX_TURNOVER"
 fi

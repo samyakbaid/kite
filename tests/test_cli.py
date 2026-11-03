@@ -255,5 +255,46 @@ class FitCashAndAdoptTests(unittest.TestCase):
         self.assertEqual([(i.side, i.symbol) for i in CashBroker.placed], [("SELL", "PERSONAL")])
 
 
+class OrderedTodayBroker(CashBroker):
+    def __init__(self):
+        super().__init__()
+        self.cash = 10_000_000.0
+
+    def todays_orders(self):
+        return {("BUY", "S001")}
+
+
+class OrderedTodayGuardTests(unittest.TestCase):
+    def run_cli(self, extra):
+        import os
+        CashBroker.placed = []
+        os.environ["KITE_LIVE_TRADING"] = "ENABLED"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            signal_path = root / "signals.csv"
+            write_signal_file(signal_path)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(
+                    ["--signals", str(signal_path), "--capital", "300000",
+                     "--state-file", str(root / "state.json"),
+                     "--receipt-dir", str(root / "receipts"),
+                     "--live", "--confirm-live", "PLACE_ORDERS", "--yes",
+                     "--ignore-market-hours", "--order-delay", "0", "--allow-stale",
+                     "--force"] + extra,
+                    broker_factory=OrderedTodayBroker,
+                )
+        return out.getvalue()
+
+    def test_guard_skips_symbols_ordered_today_even_with_force(self):
+        output = self.run_cli([])
+        self.assertNotIn("S001", [i.symbol for i in CashBroker.placed])
+        self.assertIn("Skipping orders already placed today", output)
+
+    def test_guard_can_be_disabled(self):
+        self.run_cli(["--allow-repeat-orders"])
+        self.assertIn("S001", [i.symbol for i in CashBroker.placed])
+
+
 if __name__ == "__main__":
     unittest.main()

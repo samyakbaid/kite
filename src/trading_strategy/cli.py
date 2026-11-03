@@ -100,6 +100,16 @@ def parse_args(argv=None):
         help="With --phase buys: shrink the turnover cap so the buys fit the free cash",
     )
     parser.add_argument(
+        "--allow-repeat-orders",
+        action="store_true",
+        help="Disable the guard that skips orders for symbols already ordered today",
+    )
+    parser.add_argument(
+        "--exclude",
+        default="",
+        help="Comma-separated symbols the bot must never touch (personal holdings, ETFs)",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="Skip the interactive confirmation prompt in live mode",
@@ -267,6 +277,11 @@ def main(argv=None, broker_factory=KiteBroker):
     check_market_open(args)
     broker = broker_factory()
     broker_holdings = broker.holdings()
+    excluded = {x.strip().upper() for x in args.exclude.split(",") if x.strip()}
+    ignored = sorted(excluded & set(broker_holdings))
+    if ignored:
+        print(f"Ignoring personal holdings (never traded by the bot): {', '.join(ignored)}")
+    broker_holdings = {s: q for s, q in broker_holdings.items() if s not in excluded}
     if args.manage_all_holdings:
         adopted = sorted(set(broker_holdings) - set(state["managed_symbols"]))
         if adopted:
@@ -338,6 +353,15 @@ def main(argv=None, broker_factory=KiteBroker):
         intents = [intent for intent in intents if intent.side == "SELL"]
     elif args.phase == "buys":
         intents = [intent for intent in intents if intent.side == "BUY"]
+    if hasattr(broker, "todays_orders") and not args.allow_repeat_orders:
+        ordered_today = broker.todays_orders()
+        duplicates = [i for i in intents if (i.side, i.symbol) in ordered_today]
+        if duplicates:
+            print(
+                "Skipping orders already placed today (guards against double-buying): "
+                + ", ".join(f"{i.side} {i.symbol}" for i in duplicates)
+            )
+            intents = [i for i in intents if i not in duplicates]
     print_portfolio(broker, signals, current_quantities, broker_holdings, args.capital)
     print_plan(model, signal_date, selected, intents, args.capital)
 
