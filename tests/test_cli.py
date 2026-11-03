@@ -122,7 +122,7 @@ class LiveFailureTests(unittest.TestCase):
                         "--capital", "300000",
                         "--state-file", str(root / "state.json"),
                         "--receipt-dir", str(root / "receipts"),
-                        "--live", "--confirm-live", "PLACE_ORDERS",
+                        "--live", "--confirm-live", "PLACE_ORDERS", "--yes",
                         "--ignore-market-hours", "--order-delay", "0", "--allow-stale",
                     ],
                     broker_factory=FailingLiveBroker,
