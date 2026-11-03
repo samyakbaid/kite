@@ -129,6 +129,7 @@ def plan_rebalance(
     max_orders=60,
     max_weight=0.10,
     top_up=True,
+    exits_only=False,
 ):
     """Create capital- and turnover-capped long-only delivery order intents."""
     if capital <= 0:
@@ -162,6 +163,12 @@ def plan_rebalance(
     raw_deltas = {
         symbol: target.get(symbol, 0) - current.get(symbol, 0) for symbol in universe
     }
+    if exits_only:
+        # Never trim a name that is still selected; only sell names that left the buffer.
+        raw_deltas = {
+            symbol: (0 if symbol in selected and delta < 0 else delta)
+            for symbol, delta in raw_deltas.items()
+        }
     full_turnover_value = sum(
         abs(quantity) * prices[symbol] for symbol, quantity in raw_deltas.items()
     )

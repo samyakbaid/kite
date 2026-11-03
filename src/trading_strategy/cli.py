@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,6 +85,26 @@ def parse_args(argv=None):
         help="Stop submitting after this many failed orders in a row (e.g. IP not whitelisted)",
     )
     parser.add_argument(
+        "--exits-only",
+        action="store_true",
+        help="Sell only names that fell out of the rank buffer; never trim names still selected",
+    )
+    parser.add_argument(
+        "--manage-all-holdings",
+        action="store_true",
+        help="Treat every NSE holding in the Kite account as bot-managed (no mark_managed step)",
+    )
+    parser.add_argument(
+        "--fit-cash",
+        action="store_true",
+        help="With --phase buys: shrink the turnover cap so the buys fit the free cash",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation prompt in live mode",
+    )
+    parser.add_argument(
         "--ignore-market-hours",
         action="store_true",
         help="Skip the NSE market-hours check for live regular-variety orders",
@@ -116,6 +137,61 @@ def print_plan(model, signal_date, selected, intents, capital):
         )
 
 
+def print_portfolio(broker, signals, current_quantities, broker_holdings, capital):
+    """Show the live Kite portfolio next to the strategy's ranks (display only)."""
+    ranks = {signal.symbol: signal.rank for signal in signals}
+    symbols = sorted(broker_holdings)
+    try:
+        prices = broker.last_prices(symbols) if symbols else {}
+    except Exception as exc:  # display must never block a rebalance
+        print(f"(could not fetch prices for the portfolio view: {exc})")
+        return
+    rows = []
+    for symbol in symbols:
+        quantity = broker_holdings[symbol]
+        value = quantity * prices.get(symbol, 0.0)
+        rows.append((symbol, quantity, prices.get(symbol, 0.0), value))
+    rows.sort(key=lambda row: -row[3])
+    managed_value = sum(r[3] for r in rows if r[0] in current_quantities)
+    print("\nLIVE KITE PORTFOLIO (bot-managed names marked *)")
+    print("SYMBOL          QTY        LTP       VALUE   WEIGHT   RANK")
+    for symbol, quantity, price, value in rows:
+        mark = "*" if symbol in current_quantities else " "
+        rank = ranks.get(symbol)
+        print(
+            f"{mark}{symbol:14} {quantity:4d} {price:10.2f} {value:11.2f} "
+            f"{value / capital:7.1%} {rank if rank is not None else '-':>6}"
+        )
+    print(
+        f"Bot-managed value: {managed_value:,.2f} of strategy capital {capital:,.0f} "
+        f"({managed_value / capital:.1%} deployed)"
+    )
+
+
+def confirm_orders(intents, args):
+    """Ask the user before anything is sent. Returns the intents to place."""
+    if args.yes or not intents or not sys.stdin.isatty():
+        return intents
+    print(
+        "\nPlace these orders on Kite now?\n"
+        "  [y] place all   [s] choose one by one   [n] cancel (anything else cancels)"
+    )
+    answer = input("> ").strip().lower()
+    if answer == "y":
+        return intents
+    if answer != "s":
+        return []
+    chosen = []
+    for intent in intents:
+        reply = input(
+            f"{intent.side} {intent.quantity} x {intent.symbol} "
+            f"(~{intent.estimated_value:,.2f})? [y/N] "
+        ).strip().lower()
+        if reply == "y":
+            chosen.append(intent)
+    return chosen
+
+
 def live_gate(args):
     if not args.live:
         return
@@ -126,6 +202,19 @@ def live_gate(args):
 
 
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def failure_hint(message):
+    text = message.lower()
+    if "ip" in text and "not allowed" in text:
+        return ("whitelist this machine's public IP in the Kite developer console "
+                "(scripts/preflight.py prints it), then re-run")
+    if "authorised at cdsl" in text or "authorized at cdsl" in text:
+        return ("sell authorisation needed: in Kite open Holdings > Authorise (TPIN/OTP at CDSL), "
+                "then re-run the sells step")
+    if "market" in text and "closed" in text:
+        return "market is closed - run between 09:15 and 15:30 IST on a trading day"
+    return None
 
 
 def check_market_open(args, now=None):
@@ -168,7 +257,7 @@ def main(argv=None, broker_factory=KiteBroker):
         )
     state_path = Path(args.state_file or f".trading_state/{slugify(model)}.json")
     state = load_state(state_path)
-    if already_submitted(state, model, signal_date) and not args.force:
+    if already_submitted(state, model, signal_date, args.phase) and not args.force:
         raise RuntimeError(
             "this model/signal date was already submitted; use --force only after "
             "checking the saved receipt and Kite order book"
@@ -178,7 +267,13 @@ def main(argv=None, broker_factory=KiteBroker):
     check_market_open(args)
     broker = broker_factory()
     broker_holdings = broker.holdings()
-    managed_symbols = set(state["managed_symbols"]).intersection(broker_holdings)
+    if args.manage_all_holdings:
+        adopted = sorted(set(broker_holdings) - set(state["managed_symbols"]))
+        if adopted:
+            print(f"Adopting {len(adopted)} existing holdings as bot-managed: {', '.join(adopted)}")
+        managed_symbols = set(broker_holdings)
+    else:
+        managed_symbols = set(state["managed_symbols"]).intersection(broker_holdings)
     # Forget fully exited names so later personal purchases are never adopted by accident.
     state["managed_symbols"] = sorted(managed_symbols)
     current_quantities = {
@@ -198,6 +293,21 @@ def main(argv=None, broker_factory=KiteBroker):
             f"BOOTSTRAP ({trigger}): deploying up to {effective_turnover:.0%} "
             "one-way turnover this run instead of the standard cap."
         )
+
+    if args.fit_cash and args.phase == "buys":
+        free_cash = broker.available_cash()
+        ceiling = free_cash / 1.01 / args.capital * 0.995
+        if ceiling < 0.0005:
+            raise RiskLimitError(
+                f"free cash {free_cash:.2f} is too small to buy anything; add funds or "
+                "wait for sale proceeds to settle"
+            )
+        if ceiling < effective_turnover:
+            print(
+                f"FIT-CASH: free cash {free_cash:,.2f} -> buy turnover capped at "
+                f"{ceiling:.2%} (was {effective_turnover:.2%})."
+            )
+            effective_turnover = ceiling
 
     # Fetch only the top buffer zone and existing managed names, not the whole file.
     candidates = choose_holdings(
@@ -222,11 +332,13 @@ def main(argv=None, broker_factory=KiteBroker):
         max_orders=args.max_orders,
         max_weight=args.max_weight,
         top_up=not args.no_top_up,
+        exits_only=args.exits_only,
     )
     if args.phase == "sells":
         intents = [intent for intent in intents if intent.side == "SELL"]
     elif args.phase == "buys":
         intents = [intent for intent in intents if intent.side == "BUY"]
+    print_portfolio(broker, signals, current_quantities, broker_holdings, args.capital)
     print_plan(model, signal_date, selected, intents, args.capital)
 
     payload = {
@@ -260,6 +372,19 @@ def main(argv=None, broker_factory=KiteBroker):
         raise RiskLimitError(
             f"planned buys plus 1% reserve ({estimated_buys * 1.01:.2f}) exceed "
             f"available cash ({available_cash:.2f}); run --phase sells first or reduce capital"
+        )
+
+    planned = intents
+    intents = confirm_orders(planned, args)
+    declined = [i for i in planned if i not in intents]
+    if planned and not intents:
+        print("\nCancelled by user. No orders placed.")
+        payload["results"].append({"status": "cancelled_by_user"})
+        write_receipt(args.receipt_dir, model, signal_date, "cancelled", payload)
+        return 0
+    for intent in declined:
+        payload["results"].append(
+            {**intent.to_dict(), "status": "declined", "error": "declined by user"}
         )
 
     tag = f"wf_{slugify(model)[:8]}_{signal_date:%y%m}"
@@ -307,6 +432,9 @@ def main(argv=None, broker_factory=KiteBroker):
                 {**intent.to_dict(), "status": "error", "error": str(exc)}
             )
             print(f"  FAIL  {intent.side:4} {intent.symbol:14} qty {intent.quantity:5d} -> {exc}")
+            hint = failure_hint(str(exc))
+            if hint:
+                print(f"        hint: {hint}")
             if intent.side == "SELL":
                 sell_failed = True
             consecutive_errors += 1
@@ -321,7 +449,7 @@ def main(argv=None, broker_factory=KiteBroker):
     if not intents or any(
         result["status"] == "submitted" for result in payload["results"]
     ):
-        record_submission(state, model, signal_date, payload["results"])
+        record_submission(state, model, signal_date, payload["results"], args.phase)
         save_state(state_path, state)
     receipt = write_receipt(args.receipt_dir, model, signal_date, "live", payload)
     submitted = sum(r["status"] == "submitted" for r in payload["results"])

@@ -46,6 +46,18 @@ fi
 if [[ -n "${MAX_WEIGHT:-}" ]]; then
   set -- "$@" --max-weight "$MAX_WEIGHT"
 fi
+if [[ "${MANAGE_ALL_HOLDINGS:-NO}" == "YES" ]]; then
+  set -- "$@" --manage-all-holdings
+fi
+if [[ "${FIT_CASH:-NO}" == "YES" ]]; then
+  set -- "$@" --fit-cash
+fi
+if [[ "${EXITS_ONLY:-NO}" == "YES" ]]; then
+  set -- "$@" --exits-only
+fi
+if [[ -n "${PHASE:-}" ]]; then
+  set -- "$@" --phase "$PHASE"
+fi
 if [[ -n "${MAX_TURNOVER:-}" ]]; then
   set -- "$@" --max-turnover "$MAX_TURNOVER"
 fi

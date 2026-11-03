@@ -134,5 +134,126 @@ class LiveFailureTests(unittest.TestCase):
             self.assertFalse((root / "state.json").exists() and "S001" in (root / "state.json").read_text())
 
 
+class RecordingBroker:
+    placed = []
+
+    def holdings(self):
+        return {}
+
+    def last_prices(self, symbols):
+        return {symbol: 100.0 for symbol in symbols}
+
+    def available_cash(self):
+        return 10_000_000.0
+
+    def place(self, intent, **kwargs):
+        type(self).placed.append(intent.symbol)
+        return "OID" + intent.symbol
+
+
+class ConfirmationTests(unittest.TestCase):
+    def run_live(self, answers):
+        import os
+        from unittest import mock
+        RecordingBroker.placed = []
+        os.environ["KITE_LIVE_TRADING"] = "ENABLED"
+        feed = iter(answers)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            signal_path = root / "signals.csv"
+            write_signal_file(signal_path)
+            out = io.StringIO()
+            with redirect_stdout(out), mock.patch(
+                "trading_strategy.cli.sys.stdin.isatty", return_value=True, create=True
+            ), mock.patch("builtins.input", lambda *_: next(feed)):
+                result = main(
+                    [
+                        "--signals", str(signal_path),
+                        "--capital", "300000",
+                        "--state-file", str(root / "state.json"),
+                        "--receipt-dir", str(root / "receipts"),
+                        "--live", "--confirm-live", "PLACE_ORDERS",
+                        "--ignore-market-hours", "--order-delay", "0", "--allow-stale",
+                    ],
+                    broker_factory=RecordingBroker,
+                )
+            state_exists = (root / "state.json").exists()
+        return result, out.getvalue(), state_exists
+
+    def test_cancel_places_nothing(self):
+        result, output, state_exists = self.run_live(["n"])
+        self.assertEqual(result, 0)
+        self.assertEqual(RecordingBroker.placed, [])
+        self.assertIn("Cancelled by user", output)
+        self.assertFalse(state_exists)
+
+    def test_yes_places_all(self):
+        result, output, _ = self.run_live(["y"])
+        self.assertEqual(result, 0)
+        self.assertGreater(len(RecordingBroker.placed), 0)
+        self.assertIn("LIVE KITE PORTFOLIO", output)
+
+    def test_select_one_by_one(self):
+        result, output, _ = self.run_live(["s", "y", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n", "n"])
+        self.assertEqual(len(RecordingBroker.placed), 1)
+
+
+class CashBroker:
+    placed = []
+
+    def __init__(self):
+        self.cash = 30_000.0
+
+    def holdings(self):
+        return {"PERSONAL": 50}
+
+    def last_prices(self, symbols):
+        return {symbol: 100.0 for symbol in symbols}
+
+    def available_cash(self):
+        return self.cash
+
+    def place(self, intent, **kwargs):
+        type(self).placed.append(intent)
+        return "OID"
+
+
+class FitCashAndAdoptTests(unittest.TestCase):
+    def run_cli(self, extra):
+        import os
+        CashBroker.placed = []
+        os.environ["KITE_LIVE_TRADING"] = "ENABLED"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            signal_path = root / "signals.csv"
+            write_signal_file(signal_path)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(
+                    [
+                        "--signals", str(signal_path), "--capital", "300000",
+                        "--state-file", str(root / "state.json"),
+                        "--receipt-dir", str(root / "receipts"),
+                        "--live", "--confirm-live", "PLACE_ORDERS", "--yes",
+                        "--ignore-market-hours", "--order-delay", "0", "--allow-stale",
+                    ] + extra,
+                    broker_factory=CashBroker,
+                )
+        return out.getvalue()
+
+    def test_fit_cash_keeps_buys_within_free_cash(self):
+        output = self.run_cli(["--phase", "buys", "--fit-cash"])
+        spent = sum(i.estimated_value for i in CashBroker.placed)
+        self.assertLessEqual(spent * 1.01, 30_000.0)
+        self.assertGreater(len(CashBroker.placed), 0)
+        self.assertIn("FIT-CASH", output)
+
+    def test_manage_all_holdings_adopts_and_sells_out_of_rank(self):
+        output = self.run_cli(["--manage-all-holdings", "--phase", "sells", "--exits-only",
+                               "--max-turnover", "1.0"])
+        self.assertIn("Adopting 1 existing holdings", output)
+        self.assertEqual([(i.side, i.symbol) for i in CashBroker.placed], [("SELL", "PERSONAL")])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,15 +30,23 @@ def save_state(path, state):
     os.replace(temporary, path)
 
 
-def already_submitted(state, model, signal_date):
+def already_submitted(state, model, signal_date, phase="all"):
+    """True if this model/signal date was already submitted for an overlapping phase.
+
+    A "sells" run followed by a "buys" run is allowed; an "all" run overlaps both.
+    Entries written before phases existed count as "all".
+    """
     signal_date = str(signal_date)
-    return any(
-        item.get("model") == model and item.get("signal_date") == signal_date
-        for item in state["submissions"]
-    )
+    for item in state["submissions"]:
+        if item.get("model") != model or item.get("signal_date") != signal_date:
+            continue
+        prior = item.get("phase", "all")
+        if prior == "all" or phase == "all" or prior == phase:
+            return True
+    return False
 
 
-def record_submission(state, model, signal_date, results):
+def record_submission(state, model, signal_date, results, phase="all"):
     submitted_buys = {
         result["symbol"]
         for result in results
@@ -49,6 +57,7 @@ def record_submission(state, model, signal_date, results):
         {
             "model": model,
             "signal_date": str(signal_date),
+            "phase": phase,
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
             "results": results,
         }
